@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 
 from fastapi import FastAPI
-import uvicorn
 
 app = FastAPI()
 
 
-@app.route("/")
-def root():
-    return {"response": "Test"}
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
