@@ -11,6 +11,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from config import Informations
+from components.Passwords import Passwords
 
 
 fake_users_db = {
@@ -27,6 +28,13 @@ fake_users_db = {
 class Token(BaseModel):
     access_token: str
     token_type: str
+    
+    
+class PasswordSearch(BaseModel):
+    name: str
+    url: str
+    user: str
+    password: str
 
 
 class TokenData(BaseModel):
@@ -43,6 +51,7 @@ class User(BaseModel):
 class UserInDB(User):
     hashed_password: str
 
+passwordsClass = Passwords()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -134,3 +143,23 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
 @app.get("/users/me/", response_model=User)
 async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
+
+@app.get("/password/search/", response_model=PasswordSearch)
+async def searchpass(query: str = ""):
+    # if not query or query == "":
+    for category, item in passwordsClass.fake_pwd_db.items():
+        print(f"== {category.upper()} ==")
+        for name, info in dict(item).items():
+            print(f"==== {str(name).capitalize()} ====")
+            if isinstance(info, dict):
+                for key, value in dict(info).items():
+                    print(f"{str(key).upper()}: {value}")
+            elif isinstance(info, list) and all(isinstance(itemTMP, dict) for itemTMP in info):
+                counter = 1
+                for pwd in info:
+                    print(f"-- Entry: {counter} --")
+                    for key, value in dict(pwd).items():
+                        print(f"{str(key).upper()}: {value}")
+                    counter += 1
+                    
+        print()
