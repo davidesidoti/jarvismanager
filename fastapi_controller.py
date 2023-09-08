@@ -1,165 +1,108 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-from datetime import datetime, timedelta
 from typing import Annotated
+from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
+from passlib.context import CryptContext
+from jose import JWTError, jwt
 
 from config import Informations
 from components.Passwords import Passwords
+from utilities.DBConnections import DBManager
 
-
-fake_users_db = {
-    "hash": {
-        "username": "hash",
-        "full_name": "Davide Sidoti",
-        "email": "sidotidavide@gmail.com",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
-        "disabled": False,
-    }
-}
+passwordsClass = Passwords()
+db = DBManager()
 
 
 class Token(BaseModel):
     access_token: str
     token_type: str
     
-    
-class PasswordSearch(BaseModel):
-    name: str
-    url: str
-    user: str
-    password: str
-
-
 class TokenData(BaseModel):
     username: str | None = None
 
 
-class User(BaseModel):
-    username: str
-    email: str | None = None
-    full_name: str | None = None
-    disabled: bool | None = None
-
-
-class UserInDB(User):
-    hashed_password: str
-
-passwordsClass = Passwords()
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+app = FastAPI()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-app = FastAPI()
 
+class AuthManager:
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    def __init__(self) -> None:
+        pass
 
+    def verify_password(self, plain_password, hashed_password):
+        return self.pwd_context.verify(plain_password, hashed_password)
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
+    def get_user(self, email: str):
+        user = db.query(f"SELECT * FROM `users` WHERE `email`='{email}'")
+        if user:
+            return user
 
+    def authenticate_user(self, email: str, password: str):
+        user = self.get_user(email)
+        if not user:
+            return False
+        if not self.verify_password(password, user[0]["password"]):
+            return False
+        return user
 
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
-
-
-def authenticate_user(fake_db, username: str, password: str):
-    user = get_user(fake_db, username)
-    if not user:
-        return False
-    if not verify_password(password, user.hashed_password):
-        return False
-    return user
-
-
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(
-        to_encode, Informations.SECRET_KEY.value, algorithm=Informations.ALGORITHM.value)
-    return encoded_jwt
-
-
-async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(
-            token, Informations.SECRET_KEY.value, algorithms=[Informations.ALGORITHM.value])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
-        raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
-    if user is None:
-        raise credentials_exception
-    return user
-
-
-async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]):
-    if current_user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
-
-
+    def create_access_token(self, data: dict, expires_delta: timedelta | None = None):
+        to_encode = data.copy()
+        if expires_delta:
+            expire = datetime.utcnow() + expires_delta
+        else:
+            expire = datetime.utcnow() + timedelta(minutes=15)
+        to_encode.update({"exp": expire})
+        encoded_jwt = jwt.encode(
+            to_encode, Informations.SECRET_KEY.value, algorithm=Informations.ALGORITHM.value)
+        return encoded_jwt
+    
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
-    user = authenticate_user(
-        fake_users_db, form_data.username, form_data.password)
+    auth = AuthManager()
+    user = auth.authenticate_user(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(
-        minutes=Informations.ACCESS_TOKEN_EXPIRE_MINUTES.value)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+    access_token_expires = timedelta(minutes=Informations.ACCESS_TOKEN_EXPIRE_MINUTES.value)
+    access_token = auth.create_access_token(
+        data={"sub": user[0]["email"]}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
-    return current_user
+@app.get("/password/search/")
+async def searchpass(token: Annotated[str, Depends(oauth2_scheme)], query: str = ""):
+    auth = AuthManager()
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, Informations.SECRET_KEY.value, algorithms=[Informations.ALGORITHM.value])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        token_data = TokenData(username=username)
+    except JWTError:
+        raise credentials_exception
+    user = auth.get_user(email=token_data.username)
+    if user is None:
+        raise credentials_exception
+    
+    return passwordsClass.search_pwd(query)
 
-@app.get("/password/search/", response_model=PasswordSearch)
-async def searchpass(query: str = ""):
-    # if not query or query == "":
-    for category, item in passwordsClass.fake_pwd_db.items():
-        print(f"== {category.upper()} ==")
-        for name, info in dict(item).items():
-            print(f"==== {str(name).capitalize()} ====")
-            if isinstance(info, dict):
-                for key, value in dict(info).items():
-                    print(f"{str(key).upper()}: {value}")
-            elif isinstance(info, list) and all(isinstance(itemTMP, dict) for itemTMP in info):
-                counter = 1
-                for pwd in info:
-                    print(f"-- Entry: {counter} --")
-                    for key, value in dict(pwd).items():
-                        print(f"{str(key).upper()}: {value}")
-                    counter += 1
-                    
-        print()
+# auth = AuthManager()
+# print(auth.create_access_token({"sub": "sidotidavide@gmail.com"}))
